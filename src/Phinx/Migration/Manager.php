@@ -30,6 +30,8 @@ namespace Phinx\Migration;
 
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Output\NullOutput;
+use Symfony\Component\Filesystem\Filesystem;
 use Phinx\Config\ConfigInterface;
 use Phinx\Migration\Manager\Environment;
 use Phinx\Seed\AbstractSeed;
@@ -661,29 +663,9 @@ class Manager
                         ));
                     }
 
-                    $fileNames[$class] = basename($filePath);
+                    $fileNames[$class] = ($filePath);
 
-                    // load the migration file
-                    /** @noinspection PhpIncludeInspection */
-                    require_once $filePath;
-                    if (!class_exists($class)) {
-                        throw new \InvalidArgumentException(sprintf(
-                            'Could not find class "%s" in file "%s"',
-                            $class,
-                            $filePath
-                        ));
-                    }
-
-                    // instantiate it
-                    $migration = new $class($version, $this->getInput(), $this->getOutput());
-
-                    if (!($migration instanceof AbstractMigration)) {
-                        throw new \InvalidArgumentException(sprintf(
-                            'The class "%s" in file "%s" must extend \Phinx\Migration\AbstractMigration',
-                            $class,
-                            $filePath
-                        ));
-                    }
+                    $migration = $this->instantiateMigration($filePath, $class, $version);
 
                     $versions[$version] = $migration;
                 }
@@ -879,5 +861,72 @@ class Manager
             ' %d breakpoints cleared.',
             $this->getEnvironment($environment)->getAdapter()->resetAllBreakpoints()
         ));
+    }
+
+    /**
+     * @param $filePath
+     * @param $class
+     * @param $version
+     *
+     * @return AbstractMigration
+     * @throws \InvalidArgumentException
+     */
+    protected function instantiateMigration($filePath, $class, $version)
+    {
+        // load the migration file
+        /** @noinspection PhpIncludeInspection */
+        require_once $filePath;
+        if (!class_exists($class)) {
+            throw new \InvalidArgumentException(sprintf(
+                'Could not find class "%s" in file "%s"',
+                $class,
+                $filePath
+            ));
+        }
+
+        // instantiate it
+        $migration = new $class($version, $this->getInput(), $this->getOutput());
+
+        if (!($migration instanceof AbstractMigration)) {
+            throw new \InvalidArgumentException(sprintf(
+                'The class "%s" in file "%s" must extend \Phinx\Migration\AbstractMigration',
+                $class,
+                $filePath
+            ));
+        }
+        return $migration;
+    }
+
+    /**
+     * @param string $environment
+     * @param string $filePath
+     */
+    public function schemaLoad($environment, $filePath)
+    {
+        $this->getEnvironment($environment)->getAdapter()->setForeignKeyChecks(false);
+        $this->resetDatabase($environment);
+        $class = Util::mapFileNameToClassName(basename($filePath));
+        $pos = strpos($class, '.php');
+        if ($pos !== false) {
+            $class = substr($class, 0, $pos);
+        }
+        $migration = $this->instantiateMigration($filePath, $class, 0);
+        $this->executeMigration($environment, $migration, MigrationInterface::UP);
+        $this->getEnvironment($environment)->getAdapter()->setForeignKeyChecks(true);
+    }
+
+    /**
+     * @param string $environment
+     */
+    public function resetDatabase($environment)
+    {
+        $this->getOutput()->writeln(" == <comment>Resetting database</comment>");
+        $tables = $this->getEnvironment($environment)->getAdapter()->getTables();
+        if (count($tables) > 0) {
+            foreach ($tables as $table) {
+                $this->getEnvironment($environment)->getAdapter()->dropTable($table->getName());
+            }
+        }
+        $this->getOutput()->writeln(" == <comment>Done</comment>");
     }
 }

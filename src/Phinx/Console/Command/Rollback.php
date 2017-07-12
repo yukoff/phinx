@@ -122,6 +122,7 @@ EOT
 
         $start = microtime(true);
         $this->getManager()->rollback($environment, $target, $force, $targetMustMatchVersion);
+        $this->getManager()->schemaDump($environment);
         $end = microtime(true);
 
         $output->writeln('');

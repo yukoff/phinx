@@ -299,6 +299,13 @@ interface AdapterInterface
     public function quoteColumnName($columnName);
 
     /**
+     * Return the tables in the database.
+     *
+     * @return Table[]
+     */
+    public function getTables();
+
+    /**
      * Checks to see if a table exists.
      *
      * @param string $tableName Table Name
@@ -526,4 +533,11 @@ interface AdapterInterface
      * @return mixed
      */
     public function castToBool($value);
+
+    /**
+     * Disable or enable foreign key checks.
+     *
+     * @param bool $enabled If true, enable foreign key checks.
+     */
+    public function setForeignKeyChecks($enabled);
 }

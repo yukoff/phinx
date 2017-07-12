@@ -278,4 +278,16 @@ class TablePrefixAdapter extends AdapterWrapper
     {
         return $this->getPrefix() . $tableName . $this->getSuffix();
     }
+
+
+    public function getTables()
+    {
+        // TODO: Implement getTables() method.
+    }
+
+
+    public function setForeignKeyChecks($enabled)
+    {
+        // TODO: Implement setForeignKeyChecks() method.
+    }
 }

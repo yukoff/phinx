@@ -181,6 +181,42 @@ class MysqlAdapter extends PdoAdapter implements AdapterInterface
     /**
      * {@inheritdoc}
      */
+    public function getTables()
+    {
+        $options = $this->getOptions();
+
+        $tables = array();
+        $rows = $this->fetchAll(sprintf('SHOW TABLES IN `%s`', $options['name']));
+
+        foreach ($rows as $row) {
+            $tableOptions = $this->getTableOptions($row[0]);
+            $table = new Table($row[0], $tableOptions, $this);
+            $table->setIndexes($this->getIndexes($row[0], false));
+            $tables[$row[0]] = $table;
+        }
+
+        foreach ($tables as $table) {
+            $foreignKeys = [];
+
+            foreach ($this->getForeignKeys($table->getName()) as $foreignKey) {
+                $fk = new ForeignKey();
+
+                $fk->setColumns($foreignKey["columns"]);
+                $fk->setReferencedTable($tables[$foreignKey["referenced_table"]]);
+                $fk->setReferencedColumns($foreignKey["referenced_columns"]);
+
+                $foreignKeys[] = $fk;
+            }
+
+            $table->setForeignKeys($foreignKeys);
+        }
+
+        return $tables;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
     public function hasTable($tableName)
     {
         $options = $this->getOptions();
@@ -344,7 +380,7 @@ class MysqlAdapter extends PdoAdapter implements AdapterInterface
     public function getColumns($tableName)
     {
         $columns = array();
-        $rows = $this->fetchAll(sprintf('SHOW COLUMNS FROM %s', $this->quoteTableName($tableName)));
+        $rows = $this->fetchAll(sprintf('SHOW FULL COLUMNS FROM %s', $this->quoteTableName($tableName)));
         foreach ($rows as $columnInfo) {
 
             $phinxType = $this->getPhinxType($columnInfo['Type']);
@@ -356,8 +392,18 @@ class MysqlAdapter extends PdoAdapter implements AdapterInterface
                    ->setType($phinxType['name'])
                    ->setLimit($phinxType['limit']);
 
+            if ($phinxType['values'] !== null) {
+                $column->setValues($phinxType['values']);
+            }
+
             if ($columnInfo['Extra'] === 'auto_increment') {
                 $column->setIdentity(true);
+            }
+
+            if (in_array($phinxType['name'], ['char', 'string', 'text'])) {
+                if ($columnInfo['Collation']) {
+                    $column->setCollation($columnInfo['Collation']);
+                }
             }
 
             $columns[] = $column;
@@ -498,18 +544,43 @@ class MysqlAdapter extends PdoAdapter implements AdapterInterface
      * Get an array of indexes from a particular table.
      *
      * @param string $tableName Table Name
+     * @param boolean $lowercase
      * @return array
      */
-    protected function getIndexes($tableName)
+    public function getIndexes($tableName)
     {
         $indexes = array();
         $rows = $this->fetchAll(sprintf('SHOW INDEXES FROM %s', $this->quoteTableName($tableName)));
         foreach ($rows as $row) {
             if (!isset($indexes[$row['Key_name']])) {
-                $indexes[$row['Key_name']] = array('columns' => array());
+                $indexes[$row['Key_name']] = array(
+                    'columns' => array(),
+                    'unique' => $row['Non_unique'] == 0 ?  1 : 0,
+                    'fulltext' => strtolower($row['Index_type']) == 'fulltext' ? 1 : 0
+                );
             }
-            $indexes[$row['Key_name']]['columns'][] = strtolower($row['Column_name']);
+
+            if ($row['Sub_part'] !== null) {
+                $indexes[$row['Key_name']]['limit'] = $row['Sub_part'];
+                $indexes[$row['Key_name']]['limit_col'] = $row['Column_name'];
+            }
+
+            $indexes[$row['Key_name']]['columns'][] = $row['Column_name'];
         }
+
+        // If index has a limit we need to push the limit column to the end of
+        // the array so it matches the create statement.
+        foreach ($indexes as $key_name => $index) {
+            if (isset($index['limit'])) {
+                foreach ($index['columns'] as $key => $column) {
+                    if ($column == $index['limit_col']) {
+                        unset($indexes[$key_name]['columns'][$key]);
+                    }
+                }
+                $indexes[$key_name]['columns'][] = $index['limit_col'];
+            }
+        }
+
         return $indexes;
     }
 
@@ -770,9 +841,6 @@ class MysqlAdapter extends PdoAdapter implements AdapterInterface
             case static::PHINX_TYPE_BINARY:
                 return array('name' => 'binary', 'limit' => $limit ? $limit : 255);
                 break;
-            case static::PHINX_TYPE_VARBINARY:
-                return array('name' => 'varbinary', 'limit' => $limit ? $limit : 255);
-                break;
             case static::PHINX_TYPE_BLOB:
                 if ($limit) {
                     $sizes = array(
@@ -884,6 +952,7 @@ class MysqlAdapter extends PdoAdapter implements AdapterInterface
         } else {
             $limit = null;
             $precision = null;
+            $values = null;
             $type = $matches[1];
             if (count($matches) > 2) {
                 $limit = $matches[3] ? (int) $matches[3] : null;
@@ -962,6 +1031,10 @@ class MysqlAdapter extends PdoAdapter implements AdapterInterface
                     $type  = static::PHINX_TYPE_TEXT;
                     $limit = static::TEXT_LONG;
                     break;
+                case 'enum':
+                    $type  = static::PHINX_TYPE_ENUM;
+                    $values = str_getcsv(substr($matches[6], 1, -1), ',', '\'');
+                    break;
             }
 
             $this->getSqlType($type, $limit);
@@ -969,7 +1042,8 @@ class MysqlAdapter extends PdoAdapter implements AdapterInterface
             return array(
                 'name' => $type,
                 'limit' => $limit,
-                'precision' => $precision
+                'precision' => $precision,
+                'values' => $values,
             );
         }
     }
@@ -1126,6 +1200,50 @@ class MysqlAdapter extends PdoAdapter implements AdapterInterface
     }
 
     /**
+     * @param string $tableName
+     *
+     * @return array
+     */
+    protected function getTableOptions($tableName)
+    {
+        $rows = $this->fetchAll(sprintf('SHOW COLUMNS IN `%s`', $tableName));
+        $pkFieldNames = array();
+        $isPkAutoIncrement = false;
+        $hasIdField = false;
+        foreach ($rows as $row) {
+            if ($row['Key'] == 'PRI') {
+                $pkFieldNames[] = $row['Field'];
+                if ($row['Extra'] == 'auto_increment') {
+                    $isPkAutoIncrement = true;
+                }
+            } else if (strtolower($row['Field']) == 'id') {
+                $hasIdField = true;
+            }
+        }
+
+        if (!count($pkFieldNames) && $hasIdField) {
+            return array('id' => false);
+        }
+
+        // new Table('user');
+        $isAutoId = count($pkFieldNames) == 1 && $pkFieldNames[0] == 'id';
+        $isNoPk = count($pkFieldNames) == 0;
+        if ($isAutoId || $isNoPk) {
+            return array();
+        }
+
+        // new Table('user', array('id'=>'user_id'));
+        if (count($pkFieldNames) == 1 && $pkFieldNames[0] != 'id' && $isPkAutoIncrement) {
+            return array('id'=>$pkFieldNames[0]);
+        }
+
+        // Everything else ...
+        // new Table('user_followers', array('id'=>false, 'primary_key'=>array('user_id')));
+        // new Table('user_followers', array('id'=>false, 'primary_key'=>array('user_id', 'follower_id')));
+        return array('id'=>false, 'primary_key'=>$pkFieldNames);
+    }
+
+    /**
      * Describes a database table. This is a MySQL adapter specific method.
      *
      * @param string $tableName Table name
@@ -1155,5 +1273,17 @@ class MysqlAdapter extends PdoAdapter implements AdapterInterface
     public function getColumnTypes()
     {
         return array_merge(parent::getColumnTypes(), array ('enum', 'set', 'year', 'json'));
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function setForeignKeyChecks($enabled)
+    {
+        if ($enabled) {
+            $this->execute('SET FOREIGN_KEY_CHECKS=1');
+        } else {
+            $this->execute('SET FOREIGN_KEY_CHECKS=0');
+        }
     }
 }

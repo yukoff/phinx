@@ -199,6 +199,42 @@ To run only one seed class use the ``--seed`` parameter or ``-s`` for short.
 
         $ phinx seed:run -e development -s MyNewSeeder
 
+The Schema Dump Command
+-----------------------
+
+The Schema Dump command allows you to create an intial database schema dump,
+which can be used as a starting point for future migrations. It will dump the
+table structure, foreign keys and indexes.
+
+To create a schema dump, use as follows.
+
+.. code-block:: bash
+
+        $ phinx schema:dump -e development
+
+By default, the schema will be dumped to your migrations folder. If you have
+multiple migration paths configured, you will have to pick one.
+
+The Schema Load Command
+-----------------------
+
+If a schema was dumped before, use this command to load it into the database.
+
+.. code-block:: bash
+
+        $ phinx schema:load -e development
+
+This command will remove all existing database tables. You will be asked to
+confirm this operation. If you want to skip the confirmation, add the
+``--destroy`` parameter.
+
+.. code-block:: bash
+
+        $ phinx schema:load -e development --destroy
+
+If you have configured multiple migration paths, you will have to pick one. It
+makes no sense to have multiple initial schemas.
+
 Configuration File Parameter
 ----------------------------
 
